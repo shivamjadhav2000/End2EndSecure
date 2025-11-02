@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script src="https://cdn.jsdelivr.net/npm/node-forge@1.3.1/dist/forge.min.js"></script>
+    <title>Payment Encryption Demo</title>
+    <style>
+        body {
+            font-family: "Segoe UI", sans-serif;
+            background-color: #f5f7fa;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .container {
+            background: white;
+            padding: 2rem;
+            border-radius: 10px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+            width: 350px;
+        }
+        h2 {
+            text-align: center;
+            color: #333;
+        }
+        input {
+            padding: 0.8rem;
+            margin: 0.5rem 0;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 1rem;
+        }
+        button {
+            width: 100%;
+            background: #0078d7;
+            color: white;
+            border: none;
+            padding: 0.8rem;
+            border-radius: 6px;
+            font-size: 1rem;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #005fa3;
+        }
+        .log {
+            margin-top: 1rem;
+            background: #f3f3f3;
+            padding: 0.8rem;
+            border-radius: 6px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2>Payment Form</h2>
+    <input
+            type="text"
+            id="transactionId"
+            placeholder="Transaction ID"
+            disabled
+    />
+    <input type="text" id="cardNumber" placeholder="Card Number" />
+    <input type="text" id="amount" placeholder="Amount" />
+    <input type="text" id="currency" placeholder="Currency (USD)" />
+    <input
+            type="text"
+            id="paymentMethod"
+            placeholder="Payment Method (CARD)"
+    />
+    <button id="sendBtn">Process Payment</button>
+
+    <div class="log" id="logArea"></div>
+</div>
+
+<script>
+    class EncryptionClient {
+        constructor(publicKeyPem, aesIV) {
+            this.publicKeyPem = publicKeyPem;
+            this.aesIV = aesIV;
+        }
+
+        // Generate random ASCII 16-character AES key
+        generateAESKey() {
+            const chars =
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+            let key = "";
+            for (let i = 0; i < 16; i++) {
+                key += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return key;
+        }
+
+        // Encrypt arbitrary data using AES-CBC
+        encryptAES(data, key) {
+            const cipher = forge.cipher.createCipher("AES-CBC", key);
+            cipher.start({ iv: this.aesIV });
+            cipher.update(forge.util.createBuffer(JSON.stringify(data), "utf8"));
+            cipher.finish();
+            return forge.util.encode64(cipher.output.getBytes());
+        }
+
+        // Encrypt AES key using RSA
+        encryptRSA(data) {
+            const publicKey = forge.pki.publicKeyFromPem(this.publicKeyPem);
+            const encrypted = publicKey.encrypt(data, "RSAES-PKCS1-V1_5");
+            return forge.util.encode64(encrypted);
+        }
+
+        // Main method: takes any JS object as input and returns { key, data }
+        encryptPayload(payload) {
+            const aesKey = this.generateAESKey();
+            const encryptedData = this.encryptAES(payload, aesKey);
+            const encryptedKey = this.encryptRSA(aesKey);
+            return { key: encryptedKey, data: encryptedData };
+        }
+    }
+    function generateTransactionId(length = 12) {
+        // Generate a random alphanumeric transaction ID
+        const chars =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        let result = "";
+        for (let i = 0; i < length; i++) {
+            result += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        return result;
+    }
+    document.getElementById("transactionId").value = generateTransactionId();
+    document.getElementById("sendBtn").addEventListener("click", async () => {
+        const transactionId = document
+            .getElementById("transactionId")
+            .value.trim();
+        const cardNumber = document.getElementById("cardNumber").value.trim();
+        const amount = parseFloat(
+            document.getElementById("amount").value.trim()
+        );
+        const currency =
+            document.getElementById("currency").value.trim() || "USD";
+        const paymentMethod =
+            document.getElementById("paymentMethod").value.trim() || "CARD";
+
+        const payload = {
+            transactionId,
+            amount,
+            currency,
+            paymentMethod,
+            cardNumber,
+        };
+
+        const logArea = document.getElementById("logArea");
+        logArea.textContent =
+            "🟡 Sending Payment JSON:\n" + JSON.stringify(payload, null, 2);
+
+        const PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
+Your Public Key
+-----END PUBLIC KEY-----`;
+
+        const AES_IV = "B90/cxLFY5GGHOo4";
+        const client = new EncryptionClient(PUBLIC_KEY_PEM, AES_IV);
+        const encryptedRequest = client.encryptPayload(payload);
+        try {
+            const res = await fetch(
+                "http://localhost:8765/api/payments/process",
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(encryptedRequest),
+                }
+            );
+
+            if (!res.ok)
+                throw new Error(`HTTP ${res.status} - ${res.statusText}`);
+            const result = await res.json();
+
+            logArea.textContent +=
+                "\n\n🟢 Server Response:\n" +
+                `Transaction ID: ${result.transactionId}\n` +
+                `Status: ${result.status}\n` +
+                `Message: ${result.message}`;
+        } catch (err) {
+            logArea.textContent += "\n\n🔴 Error:\n" + err.message;
+        }
+    });
+</script>
+</body>
+</html>
